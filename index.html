@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Leitor de Braile</title>
+<style>
+body{background:#111;color:#eee;font-family:sans-serif;margin:0;text-align:center;}
+#ctrl{padding:10px;}
+video,canvas{max-width:100%;height:auto;}
+#vid,#ov{position:absolute;left:0;top:0;}
+#cont{position:relative;display:inline-block;}
+label{margin-right:8px;}
+</style>
+<script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+</head>
+<body>
+<div id="ctrl">
+<select id="cams"></select>
+<button id="start" disabled>Iniciar</button>
+<label><input type="checkbox" id="auto" checked>auto ROI</label>
+<label><input type="checkbox" id="debug" checked>debug</label>
+<label>limiar <input type="range" id="thr" min="30" max="220" value="110"></label>
+<label><input type="checkbox" id="dark">pontos escuros</label>
+</div>
+<div id="cont">
+<video id="vid" muted playsinline></video>
+<canvas id="ov"></canvas>
+</div>
+<div>Letra: <span id="ltr">?</span></div>
+<script>
+const sel=document.getElementById('cams');
+const btn=document.getElementById('start');
+const auto=document.getElementById('auto');
+const debug=document.getElementById('debug');
+const thr=document.getElementById('thr');
+const dark=document.getElementById('dark');
+const vid=document.getElementById('vid');
+const canv=document.getElementById('ov');
+const ctx=canv.getContext('2d');
+const ltr=document.getElementById('ltr');
+let cap,src,gray;
+let roi=null,drag=false,offX=0,offY=0;
+let prev='?';
+const mapa={1:'a',3:'b',9:'c',25:'d',17:'e',11:'f',27:'g',19:'h',10:'i',26:'j',33:'k',35:'l',41:'m',57:'n',49:'o',43:'p',59:'q',51:'r',42:'s',58:'t',97:'u',99:'v',122:'w',105:'x',121:'y',113:'z'};
+cv['onRuntimeInitialized']=()=>{btn.disabled=false;};
+async function listCams(){const d=await navigator.mediaDevices.enumerateDevices();sel.innerHTML='';d.filter(i=>i.kind==='videoinput').forEach((c,i)=>{const o=document.createElement('option');o.value=c.deviceId;o.textContent=c.label||`camera ${i+1}`;sel.appendChild(o);});}
+listCams();
+btn.onclick=start;
+async function start(){if(cap){if(vid.srcObject){vid.srcObject.getTracks().forEach(t=>t.stop());}}const id=sel.value;const stream=await navigator.mediaDevices.getUserMedia({video:{deviceId:id?{exact:id}:undefined}});vid.srcObject=stream;await vid.play();canv.width=vid.videoWidth;canv.height=vid.videoHeight;cap=new cv.VideoCapture(vid);src=new cv.Mat(vid.videoHeight,vid.videoWidth,cv.CV_8UC4);gray=new cv.Mat();roi=null;prev='?';ltr.textContent='?';requestAnimationFrame(loop);}
+function drawROI(){if(!roi)return;ctx.strokeStyle='yellow';ctx.lineWidth=2;ctx.strokeRect(roi.x*canv.width,roi.y*canv.height,roi.w*canv.width,roi.h*canv.height);}
+canv.onmousedown=e=>{if(auto.checked||!roi)return;const x=e.offsetX/canv.width,y=e.offsetY/canv.height;if(x>roi.x&&x<roi.x+roi.w&&y>roi.y&&y<roi.y+roi.h){drag=true;offX=x-roi.x;offY=y-roi.y;}};
+canv.onmousemove=e=>{if(!drag)return;let x=e.offsetX/canv.width-offX,y=e.offsetY/canv.height-offY;roi.x=Math.max(0,Math.min(1-roi.w,x));roi.y=Math.max(0,Math.min(1-roi.h,y));};
+window.onmouseup=()=>{drag=false;};
+function detect(){cap.read(src);cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);let blur=new cv.Mat();cv.GaussianBlur(gray,blur,new cv.Size(5,5),0);let edges=new cv.Mat();cv.Canny(blur,edges,60,180);let cnts=new cv.MatVector();let hier=new cv.Mat();cv.findContours(edges,cnts,hier,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);let best=null,ba=0;for(let i=0;i<cnts.size();i++){let c=cnts.get(i);let r=cv.boundingRect(c);let area=r.width*r.height;let ar=r.height/r.width;if(ar<1.4||ar>1.8)continue;if(r.width<src.cols*0.15||r.width>src.cols*0.6)continue;let ca=cv.contourArea(c);if(ca<area*0.3)continue;if(area>ba){ba=area;best=r;}}blur.delete();edges.delete();cnts.delete();hier.delete();if(best){roi={x:best.x/src.cols,y:best.y/src.rows,w:best.width/src.cols,h:best.height/src.rows};}}
+function sample(){if(!roi)return'?';let r={x:roi.x*src.cols,y:roi.y*src.rows,w:roi.w*src.cols,h:roi.h*src.rows};let cw=r.w/2,ch=r.h/3;let bits=0;for(let i=0;i<6;i++){let col=i>2?1:0,row=i%3;let cx=r.x+col*cw+cw/2,cy=r.y+row*ch+ch/2;let rad=0.28*Math.min(cw,ch);let mask=cv.Mat.zeros(src.rows,src.cols,cv.CV_8UC1);cv.circle(mask,new cv.Point(cx,cy),rad,[255,255,255,255],-1);let m=cv.mean(gray,mask)[0];mask.delete();let on=dark.checked?m<thr.value:m>thr.value;if(on)bits|=1<<i;if(debug.checked){ctx.beginPath();ctx.arc(cx,cy,rad,0,Math.PI*2);ctx.strokeStyle=on?'lime':'red';ctx.stroke();}}
+return mapa[bits]||'?';}
+function loop(){if(!cap){requestAnimationFrame(loop);return;}ctx.clearRect(0,0,canv.width,canv.height);if(auto.checked)detect();drawROI();if(roi){let letter;cap.read(src);cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);letter=sample();if(letter!==prev){ltr.textContent=letter;prev=letter;if(letter!=='?'){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(letter));}}}requestAnimationFrame(loop);}
+</script>
+</body>
+</html>
+
